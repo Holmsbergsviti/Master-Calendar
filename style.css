@@ -582,7 +582,29 @@ h1 {
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 14px;
+
+  /* Scroll shadows: the `local` layers scroll with the content and so uncover
+     the fixed `scroll` layers only while there is more to see in that
+     direction. Pure CSS — no scroll listener, and correct at both ends. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top    / 100% 22px no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 22px no-repeat local,
+    radial-gradient(farthest-side at 50% 0,    rgba(0,0,0,.18), transparent) top    / 100% 9px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgba(0,0,0,.18), transparent) bottom / 100% 9px no-repeat scroll,
+    var(--surface);
+}
+
+/* The body is a flex column, so its children would otherwise shrink to fit
+   instead of overflowing — which silently squashed the last field and left
+   scrollHeight === clientHeight, so it could not be scrolled to either. */
+.modal-body > * { flex-shrink: 0; }
+
+/* Breathing room above the footer when scrolled to the bottom */
+.modal-body > *:last-child { margin-bottom: 2px; }
+
+@media (max-height: 820px) {
+  .modal-body { gap: 11px; padding: 14px 16px; }
 }
 
 .modal-buttons {
@@ -645,7 +667,7 @@ h1 {
   box-shadow: 0 0 0 3px var(--brand-glow);
 }
 
-.collapsible { animation: expand .28s var(--ease-out) both; overflow: hidden; }
+.collapsible { animation: expand .28s var(--ease-out) both; }
 
 /* ===== Coach chips ===== */
 .chip-group { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -990,9 +1012,13 @@ h1 {
   70%,100% { opacity: 0;   transform: scale(1.4); }
 }
 
+/* Deliberately does NOT animate max-height. Holding a revealed field open via
+   animation-fill-mode makes its height depend on the animation actually having
+   run — if it never advances, the field is stuck at zero height and cannot even
+   be scrolled to. Fading it in leaves the natural height alone. */
 @keyframes expand {
-  from { opacity: 0; transform: translateY(-6px); max-height: 0; }
-  to   { opacity: 1; transform: translateY(0);    max-height: 260px; }
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes shake-in {
@@ -1074,7 +1100,8 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  max-height: 132px;
+  /* Shrinks on short screens so the fields below it stay on screen */
+  max-height: clamp(62px, 13vh, 132px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 8px;
@@ -1510,4 +1537,8 @@ h1 {
   box-shadow: none;
   transform: none;
   filter: none;
+}
+
+a[href*="netlify.com"] {
+  display: none;
 }
