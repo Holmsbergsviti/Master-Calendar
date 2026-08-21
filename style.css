@@ -4,6 +4,8 @@
 
 /* ===== Design tokens (light) ===== */
 :root {
+  color-scheme: light;
+
   --brand-500:  #6366f1;
   --brand-600:  #4f46e5;
   --brand-glow: rgba(99, 102, 241, 0.40);
@@ -55,49 +57,64 @@
   --bulk-tx: #7e22ce;
 }
 
-/* ===== Design tokens (dark) ===== */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --brand-500:  #818cf8;
-    --brand-600:  #6366f1;
-    --brand-glow: rgba(129, 140, 248, 0.34);
+/* ===== Design tokens (dark) =====
+   The active theme is always stamped on <html> as data-theme. An inline script
+   in index.html resolves it (saved choice, else the system preference) before
+   first paint, so there is no flash and this block is never duplicated. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
 
-    --color-primary: #818cf8;
-    --color-danger:  #fb7185;
-    --color-accent:  #c084fc;
-    --color-success: #34d399;
-    --color-warn:    #fbbf24;
+  --brand-500:  #818cf8;
+  --brand-600:  #6366f1;
+  --brand-glow: rgba(129, 140, 248, 0.34);
 
-    --surface:        #161b26;
-    --surface-2:      #1c2231;
-    --surface-sunken: #232a3a;
-    --page-bg:        #0b0e14;
-    --page-bg-2:      #10141d;
+  --color-primary: #818cf8;
+  --color-danger:  #fb7185;
+  --color-accent:  #c084fc;
+  --color-success: #34d399;
+  --color-warn:    #fbbf24;
 
-    --border:         #2a3244;
-    --border-strong:  #3a4459;
+  --surface:        #161b26;
+  --surface-2:      #1c2231;
+  --surface-sunken: #232a3a;
+  --page-bg:        #0b0e14;
+  --page-bg-2:      #10141d;
 
-    --text:   #e8ecf5;
-    --text-2: #b3bdd0;
-    --muted:  #8b96ad;
+  --border:         #2a3244;
+  --border-strong:  #3a4459;
 
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .40);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, .45), 0 12px 28px rgba(0, 0, 0, .35);
-    --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55), 0 32px 64px rgba(0, 0, 0, .45);
+  --text:   #e8ecf5;
+  --text-2: #b3bdd0;
+  --muted:  #8b96ad;
 
-    --notice-warn-bg:   #2e2408;
-    --notice-warn-bd:   #a16207;
-    --notice-warn-tx:   #fcd34d;
-    --notice-error-bg:  #3a1218;
-    --notice-error-bd:  #9f1239;
-    --notice-error-tx:  #fda4af;
-    --notice-info-bg:   #12233f;
-    --notice-info-bd:   #1d4ed8;
-    --notice-info-tx:   #93c5fd;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .40);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, .45), 0 12px 28px rgba(0, 0, 0, .35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55), 0 32px 64px rgba(0, 0, 0, .45);
 
-    --bulk-bg: #241b38;
-    --bulk-bd: #4c2f7a;
-    --bulk-tx: #d8b4fe;
+  --notice-warn-bg:   #2e2408;
+  --notice-warn-bd:   #a16207;
+  --notice-warn-tx:   #fcd34d;
+  --notice-error-bg:  #3a1218;
+  --notice-error-bd:  #9f1239;
+  --notice-error-tx:  #fda4af;
+  --notice-info-bg:   #12233f;
+  --notice-info-bd:   #1d4ed8;
+  --notice-info-tx:   #93c5fd;
+
+  --bulk-bg: #241b38;
+  --bulk-bd: #4c2f7a;
+  --bulk-tx: #d8b4fe;
+}
+
+/* Cross-fade the palette when the switch is flipped. Applied for ~300ms by JS
+   rather than left on permanently, so normal interactions stay snappy. */
+@media (prefers-reduced-motion: no-preference) {
+  :root.theme-transition,
+  :root.theme-transition *,
+  :root.theme-transition *::before,
+  :root.theme-transition *::after {
+    transition: background-color .3s ease, border-color .3s ease, color .3s ease !important;
+    transition-delay: 0s !important;
   }
 }
 
@@ -192,6 +209,64 @@ h1 {
 }
 
 .filter-controls { display: flex; gap: 8px; align-items: center; }
+
+/* ===== Theme switch ===== */
+.theme-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 54px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform .18s var(--ease-spring),
+              border-color var(--dur) var(--ease-out),
+              box-shadow var(--dur) var(--ease-out);
+}
+
+.theme-toggle:hover { transform: translateY(-1px); border-color: var(--border-strong); }
+.theme-toggle:active { transform: scale(.95); }
+.theme-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-glow); }
+
+/* The icon rides inside the thumb, so the switch always shows the theme you
+   are currently in rather than the one you would switch to. */
+.theme-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  box-shadow: 0 2px 6px rgba(245, 158, 11, .45);
+  transition: transform .38s var(--ease-spring), background .3s var(--ease-out),
+              box-shadow .3s var(--ease-out);
+}
+
+.theme-toggle[aria-checked="true"] .theme-toggle-thumb {
+  transform: translateX(24px);
+  background: linear-gradient(135deg, #a5b4fc, #6366f1);
+  box-shadow: 0 2px 6px rgba(99, 102, 241, .55);
+}
+
+.theme-icon {
+  grid-area: 1 / 1;
+  width: 13px;
+  height: 13px;
+  transition: opacity .25s var(--ease-out), transform .38s var(--ease-spring);
+}
+
+.theme-icon svg { display: block; width: 100%; height: 100%; }
+
+.theme-icon.moon { opacity: 0; transform: rotate(-70deg) scale(.5); }
+.theme-toggle[aria-checked="true"] .theme-icon.sun  { opacity: 0; transform: rotate(70deg) scale(.5); }
+.theme-toggle[aria-checked="true"] .theme-icon.moon { opacity: 1; transform: none; }
 
 .filter-label {
   font-size: 11px;

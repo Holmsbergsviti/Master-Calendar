@@ -78,6 +78,7 @@ const coachLegend        = document.getElementById("coachLegend");
 const conflictNotice     = document.getElementById("conflictNotice");
 const toastHost          = document.getElementById("toastHost");
 const dialogHost         = document.getElementById("dialogHost");
+const themeToggle        = document.getElementById("themeToggle");
 
 /* ===== State ===== */
 let calendar;
@@ -164,6 +165,57 @@ function formatOrdinal(n) {
 function describeOccurrence(date) {
   return date.toLocaleString("en-GB", {
     weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
+  });
+}
+
+/* =====================================================================
+   Theme switch
+
+   The inline script in index.html has already stamped data-theme before
+   first paint. Until the switch is touched the page keeps following the
+   system setting; flipping it saves an explicit choice.
+   ===================================================================== */
+
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+function readStoredTheme() {
+  try {
+    const v = localStorage.getItem("theme");
+    return v === "light" || v === "dark" ? v : null;
+  } catch (e) {
+    return null; // storage blocked (private mode)
+  }
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+
+function applyTheme(theme, persist) {
+  const root = document.documentElement;
+
+  if (persist) {
+    root.classList.add("theme-transition");
+    clearTimeout(applyTheme._t);
+    applyTheme._t = setTimeout(() => root.classList.remove("theme-transition"), 320);
+    try { localStorage.setItem("theme", theme); } catch (e) { /* ignore */ }
+  }
+
+  root.setAttribute("data-theme", theme);
+  themeToggle.setAttribute("aria-checked", String(theme === "dark"));
+  themeToggle.setAttribute("aria-label", theme === "dark" ? "Switch to light mode" : "Switch to dark mode");
+}
+
+function initTheme() {
+  applyTheme(currentTheme(), false); // sync the switch with what the inline script chose
+
+  themeToggle.addEventListener("click", () => {
+    applyTheme(currentTheme() === "dark" ? "light" : "dark", true);
+  });
+
+  // Keep tracking the system until the boss picks a side
+  prefersDark.addEventListener("change", e => {
+    if (!readStoredTheme()) applyTheme(e.matches ? "dark" : "light", false);
   });
 }
 
@@ -693,6 +745,7 @@ async function deleteWholeSeries(parentId) {
 
 document.addEventListener("DOMContentLoaded", () => {
 
+  initTheme();
   renderCoachChips();
   renderTypeSegments();
   renderFilterOptions();
@@ -713,7 +766,9 @@ document.addEventListener("DOMContentLoaded", () => {
     contentHeight: "auto",
 
     dayHeaderContent: arg => {
-      const weekday = arg.date.toLocaleDateString("en-GB", { weekday: "long" });
+      // Full weekday names do not fit seven columns on a phone
+      const style = window.innerWidth < 600 ? "short" : "long";
+      const weekday = arg.date.toLocaleDateString("en-GB", { weekday: style });
       return `${weekday} ${formatOrdinal(arg.date.getDate())}`;
     },
 
