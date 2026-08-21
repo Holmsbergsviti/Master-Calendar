@@ -27,6 +27,14 @@ const fallbackColor = "#94a3b8";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+// The hours the grid actually draws. A lesson outside these would be saved but
+// invisible, so booking one is refused outright. Single source of truth: these
+// also drive slotMinTime/slotMaxTime below.
+const GRID_START = "09:00";
+const GRID_END   = "22:00";
+const GRID_START_MIN = timeToMinutes(GRID_START);
+const GRID_END_MIN   = timeToMinutes(GRID_END);
+
 // Times when the hall is already taken. Anything NOT listed here is fully free.
 //   none       -> both halls booked
 //   small-only -> only the small hall is still free
@@ -79,21 +87,39 @@ const conflictNotice     = document.getElementById("conflictNotice");
 const toastHost          = document.getElementById("toastHost");
 const dialogHost         = document.getElementById("dialogHost");
 const themeToggle        = document.getElementById("themeToggle");
+const studentPicker      = document.getElementById("studentPicker");
+const statsBtn           = document.getElementById("statsBtn");
+const statsModal         = document.getElementById("statsModal");
+const statsBackdrop      = statsModal.querySelector(".modal-backdrop");
+const closeStatsBtn      = document.getElementById("closeStats");
+const statsPrevBtn       = document.getElementById("statsPrev");
+const statsNextBtn       = document.getElementById("statsNext");
+const statsMonthLabel    = document.getElementById("statsMonthLabel");
+const statsSummary       = document.getElementById("statsSummary");
+const statsTabs          = document.getElementById("statsTabs");
+const statsBody          = document.getElementById("statsBody");
 
 /* ===== State ===== */
 let calendar;
 let selectedEvent   = null;
 let editingAllFuture = false;
 let saving          = false;
+let saveBlocked     = false;
 let modalCloseTimer = null;
 let lastFocused     = null;
 let suppressClickUntil = 0;
 
-// Snapshot of every lesson doc from the last fetch. Conflict detection reads
-// this instead of calendar.getEvents(), so lessons outside the rendered weeks
-// are still taken into account.
+// Snapshot of every lesson doc from the last fetch. Conflict detection and the
+// monthly stats read this instead of calendar.getEvents(), so lessons outside
+// the rendered weeks are still taken into account.
 let lessonCache = [];
 let cancelledSet = new Set();
+
+// Roster docs. Stats never read this — they are derived from the lessons
+// themselves, which is what keeps a deleted student's history intact.
+let studentCache = [];
+let statsMonth = new Date();
+let statsTab = "coach";
 
 /* =====================================================================
    Date helpers
@@ -395,6 +421,28 @@ function renderHallAvailability() {
  * rule at all is completely free. Overlapping a "none" rule means both halls
  * are gone; overlapping small-only/big-only means one hall is still free.
  */
+/**
+ * Refuses times the calendar cannot draw. Anything starting before GRID_START
+ * or finishing after GRID_END would be stored but never appear on the grid,
+ * so it is blocked rather than warned about.
+ */
+function checkWithinGrid(start, end) {
+  if (!isValidDate(start) || !isValidDate(end)) return { ok: true };
+
+  const startMin = start.getHours() * 60 + start.getMinutes();
+  const endMin   = startMin + Math.round((end - start) / 60000); // avoids midnight wrap
+
+  if (startMin < GRID_START_MIN) {
+    return { ok: false, reason: `Lessons cannot start before ${GRID_START} — the calendar does not show earlier times.` };
+  }
+  if (endMin > GRID_END_MIN) {
+    const h = String(Math.floor(endMin / 60) % 24).padStart(2, "0");
+    const m = String(endMin % 60).padStart(2, "0");
+    return { ok: false, reason: `This lesson would run until ${h}:${m}, past the ${GRID_END} end of the day. Start it earlier or pick a shorter type.` };
+  }
+  return { ok: true };
+}
+
 function checkHallAvailability(start, end) {
   if (!isValidDate(start) || !isValidDate(end)) return { available: true, status: null };
 
@@ -457,7 +505,16 @@ function hideConflictNotice() {
   conflictNotice.classList.add("hidden");
 }
 
-function showConflictNotice(conflicts, hall) {
+function showConflictNotice(conflicts, hall, grid = { ok: true }) {
+  // Outside calendar hours is a hard stop, so it replaces everything else
+  if (!grid.ok) {
+    conflictNotice.className = "notice error";
+    conflictNotice.querySelector(".notice-icon").textContent = "⛔";
+    conflictNotice.querySelector(".notice-title").textContent = "Outside calendar hours";
+    conflictNotice.querySelector(".notice-text").textContent = grid.reason;
+    return;
+  }
+
   const lines = [];
   let tone = "";     // "" = warn (default), "error", "info"
 
@@ -491,15 +548,264 @@ function showConflictNotice(conflicts, hall) {
 
 function updateConflictPreview() {
   const start = readStartFromInputs();
-  if (!start) { hideConflictNotice(); return; }
+  if (!start) { hideConflictNotice(); setSaveBlocked(false); return; }
 
   const end = addMinutes(start, typeDuration[getLessonType()] ?? 45);
+  const grid = checkWithinGrid(start, end);
   const conflicts = findConflicts(
     start, end,
     selectedEvent ? selectedEvent.extendedProps.docId : null,
     selectedEvent ? selectedEvent.extendedProps.occStart : null
   );
-  showConflictNotice(conflicts, checkHallAvailability(start, end));
+  showConflictNotice(conflicts, checkHallAvailability(start, end), grid);
+  setSaveBlocked(!grid.ok);
+}
+
+// Out-of-hours is a policy, not a warning, so Save is disabled outright.
+function setSaveBlocked(blocked) {
+  saveBlocked = blocked;
+  saveBtn.disabled = blocked || saving;
+  saveBtn.classList.toggle("blocked", blocked);
+}
+
+/* =====================================================================
+   Students
+
+   A lesson's title IS the student's name — that is how the calendar has
+   always been filled in, so no migration is needed and old lessons count
+   towards the stats straight away.
+
+   The roster is only used to populate the picker. Deleting a student
+   archives the roster entry and never touches a lesson, so past months
+   keep counting them.
+   ===================================================================== */
+
+function nameKey(name) {
+  return String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+async function loadStudents() {
+  try {
+    const snap = await getDocs(collection(db, "students"));
+    studentCache = snap.docs.map(d => ({
+      id: d.id,
+      name: d.data().name || "",
+      key: nameKey(d.data().name),
+      archived: !!d.data().archived
+    }));
+  } catch (e) {
+    console.error(e);
+    studentCache = [];
+  }
+}
+
+function archivedKeys() {
+  return new Set(studentCache.filter(s => s.archived).map(s => s.key));
+}
+
+/**
+ * Everyone who can be picked: roster entries plus any name that appears in
+ * lesson history but was never added explicitly (i.e. every lesson booked
+ * before this feature existed). Archived names are left out.
+ */
+function activeRoster() {
+  const archived = archivedKeys();
+  const byKey = new Map();
+
+  studentCache.forEach(s => {
+    if (s.archived || !s.key) return;
+    byKey.set(s.key, { key: s.key, name: s.name, id: s.id, lessons: 0, coaches: new Set() });
+  });
+
+  lessonCache.forEach(l => {
+    const key = nameKey(l.title);
+    if (!key || archived.has(key)) return;
+    if (!byKey.has(key)) byKey.set(key, { key, name: l.title.trim(), id: null, lessons: 0, coaches: new Set() });
+    const entry = byKey.get(key);
+    entry.lessons++;
+    l.coach.forEach(c => entry.coaches.add(c));
+  });
+
+  return Array.from(byKey.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Roster entries a given coach has actually taught, most frequent first. */
+function rosterForCoaches(coaches) {
+  const counts = new Map();
+  lessonCache.forEach(l => {
+    if (!coaches.some(c => l.coach.includes(c))) return;
+    const key = nameKey(l.title);
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return counts;
+}
+
+/**
+ * Only ever called from the "Add student" box on the Students tab. Saving a
+ * lesson never adds anyone — the roster is curated by hand.
+ * Returns false if the name is already on the roster.
+ */
+async function addStudent(name) {
+  const key = nameKey(name);
+  if (!key) return false;
+
+  const existing = studentCache.find(s => s.key === key);
+  if (existing) {
+    if (existing.archived) {
+      await updateDoc(doc(db, "students", existing.id), { archived: false });
+      existing.archived = false;
+      return true;
+    }
+    return false;
+  }
+
+  const ref = await addDoc(collection(db, "students"), {
+    name: name.trim(),
+    archived: false,
+    createdAt: new Date().toISOString()
+  });
+  studentCache.push({ id: ref.id, name: name.trim(), key, archived: false });
+  return true;
+}
+
+/**
+ * Soft delete. The lessons stay exactly as they are, so every month this
+ * student appears in keeps its numbers.
+ */
+async function archiveStudent(entry) {
+  if (entry.id) {
+    await updateDoc(doc(db, "students", entry.id), { archived: true, archivedAt: new Date().toISOString() });
+    const cached = studentCache.find(s => s.id === entry.id);
+    if (cached) cached.archived = true;
+    return;
+  }
+  // Name only ever seen in lesson history — record it purely to hide it
+  const ref = await addDoc(collection(db, "students"), {
+    name: entry.name,
+    archived: true,
+    createdAt: new Date().toISOString(),
+    archivedAt: new Date().toISOString()
+  });
+  studentCache.push({ id: ref.id, name: entry.name, key: entry.key, archived: true });
+}
+
+async function restoreStudent(id) {
+  await updateDoc(doc(db, "students", id), { archived: false });
+  const cached = studentCache.find(s => s.id === id);
+  if (cached) cached.archived = false;
+}
+
+/* =====================================================================
+   Occurrence expansion — one implementation shared by the calendar and
+   the stats, so weekly repeats and cancellations can never disagree.
+   ===================================================================== */
+
+function occurrencesInRange(rangeStart, rangeEnd) {
+  const out = [];
+
+  for (const l of lessonCache) {
+    const baseStart = new Date(l.start);
+    if (!isValidDate(baseStart)) continue;
+
+    const push = occStart => {
+      const occEnd = addMinutes(occStart, l.durationMins);
+      if (occEnd <= rangeStart || occStart >= rangeEnd) return;
+      if (cancelledSet.has(`${l.id}__${occStart.toISOString()}`)) return;
+      out.push({ lesson: l, start: occStart, end: occEnd });
+    };
+
+    if (!l.repeatWeekly) {
+      push(baseStart);
+      continue;
+    }
+
+    const endLimit = l.repeatEndDate ? new Date(l.repeatEndDate) : null;
+    const offset = Math.max(
+      0,
+      Math.round((weekStartMonday(rangeStart) - weekStartMonday(baseStart)) / WEEK_MS)
+    );
+
+    // Bounded: a month view spans ~6 weeks, so this never runs long
+    for (let i = 0; i < 64; i++) {
+      const occStart = addDays(baseStart, (offset + i) * 7);
+      if (endLimit && occStart > endLimit) break;
+      if (occStart >= rangeEnd) break;
+      push(occStart);
+    }
+  }
+
+  return out;
+}
+
+/* =====================================================================
+   Monthly stats
+   ===================================================================== */
+
+function monthRange(d) {
+  return {
+    start: new Date(d.getFullYear(), d.getMonth(), 1),
+    end:   new Date(d.getFullYear(), d.getMonth() + 1, 1)
+  };
+}
+
+function canonicalName(key, fallback) {
+  const known = studentCache.find(s => s.key === key);
+  return known ? known.name : fallback.trim();
+}
+
+// A double is a 90-minute back-to-back slot, so it is worth two lessons.
+const LESSON_WEIGHT = { double: 2 };
+function lessonWeight(type) {
+  return LESSON_WEIGHT[type] || 1;
+}
+
+/**
+ * A lesson with two coaches counts for each of them, so the coach totals can
+ * add up to more than the month's lesson count. Doubles count as two. Both
+ * are spelled out in the UI.
+ */
+function computeMonthStats(monthDate) {
+  const { start, end } = monthRange(monthDate);
+  const byCoach = new Map();
+  const byStudent = new Map();
+  let total = 0;
+  let sessions = 0;
+
+  for (const occ of occurrencesInRange(start, end)) {
+    if (occ.start < start || occ.start >= end) continue;
+    const l = occ.lesson;
+    const key = nameKey(l.title);
+    if (!key) continue;
+
+    const weight = lessonWeight(l.lessonType);
+    total += weight;
+    sessions++;
+    const name = canonicalName(key, l.title);
+
+    let student = byStudent.get(key);
+    if (!student) {
+      student = { key, name, total: 0, coaches: new Map(), types: new Map() };
+      byStudent.set(key, student);
+    }
+    student.total += weight;
+    // types stays a count of actual sessions booked, not weighted
+    student.types.set(l.lessonType, (student.types.get(l.lessonType) || 0) + 1);
+
+    const coaches = l.coach.length ? l.coach : ["Unassigned"];
+    for (const c of coaches) {
+      student.coaches.set(c, (student.coaches.get(c) || 0) + weight);
+
+      let coach = byCoach.get(c);
+      if (!coach) { coach = { name: c, total: 0, students: new Map() }; byCoach.set(c, coach); }
+      coach.total += weight;
+      const s = coach.students.get(key) || { key, name, count: 0 };
+      s.count += weight;
+      coach.students.set(key, s);
+    }
+  }
+
+  return { start, end, total, sessions, byCoach, byStudent };
 }
 
 /* =====================================================================
@@ -520,6 +826,7 @@ function renderCoachChips() {
     chip.addEventListener("click", () => {
       const on = chip.classList.toggle("selected");
       chip.setAttribute("aria-pressed", String(on));
+      renderStudentPicker(); // re-rank to this coach's students
     });
     coachChips.appendChild(chip);
   });
@@ -614,6 +921,383 @@ function syncLegendActive() {
   });
 }
 
+/* =====================================================================
+   Student picker — the name only ever gets typed once
+   ===================================================================== */
+
+function renderStudentPicker() {
+  if (!studentPicker) return;
+
+  const selectedCoaches = getSelectedCoaches();
+  const typed = nameKey(titleInput.value);
+  const chosen = nameKey(titleInput.value);
+
+  // Rank by how often the selected coaches have taught each student, so the
+  // people this coach actually works with come first.
+  const coachCounts = selectedCoaches.length ? rosterForCoaches(selectedCoaches) : new Map();
+
+  let roster = activeRoster();
+  if (typed) roster = roster.filter(s => s.key.includes(typed) || typed.includes(s.key));
+
+  roster.sort((a, b) => {
+    const ca = coachCounts.get(a.key) || 0;
+    const cb = coachCounts.get(b.key) || 0;
+    if (ca !== cb) return cb - ca;
+    if (a.lessons !== b.lessons) return b.lessons - a.lessons;
+    return a.name.localeCompare(b.name);
+  });
+
+  studentPicker.innerHTML = "";
+
+  if (roster.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "picker-empty";
+    empty.textContent = studentCache.length || lessonCache.length
+      ? "No match — this will be added as a new student."
+      : "No students yet — the first name you type is saved automatically.";
+    studentPicker.appendChild(empty);
+    return;
+  }
+
+  roster.slice(0, 60).forEach(s => {
+    const withCoach = coachCounts.get(s.key) || 0;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "student-chip";
+    btn.classList.toggle("selected", s.key === chosen);
+    if (withCoach > 0) btn.classList.add("familiar");
+    btn.title = withCoach > 0
+      ? `${withCoach} lesson${withCoach > 1 ? "s" : ""} with the selected coach`
+      : `${s.lessons} lesson${s.lessons === 1 ? "" : "s"} in total`;
+    btn.innerHTML = `<span class="student-chip-name"></span><span class="student-chip-count"></span>`;
+    btn.querySelector(".student-chip-name").textContent = s.name;
+    btn.querySelector(".student-chip-count").textContent = withCoach > 0 ? withCoach : s.lessons;
+    btn.addEventListener("click", () => {
+      titleInput.value = s.name;
+      renderStudentPicker();
+      updateConflictPreview();
+    });
+    studentPicker.appendChild(btn);
+  });
+}
+
+/* =====================================================================
+   Stats rendering
+   ===================================================================== */
+
+function monthLabel(d) {
+  return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+}
+
+function makeBar(count, max, color) {
+  const bar = document.createElement("span");
+  bar.className = "stat-bar";
+  const fill = document.createElement("span");
+  fill.className = "stat-bar-fill";
+  fill.style.background = color;
+  fill.style.width = `${max > 0 ? Math.max((count / max) * 100, 4) : 0}%`;
+  bar.appendChild(fill);
+  return bar;
+}
+
+function statRow(name, count, max, color, meta) {
+  const row = document.createElement("div");
+  row.className = "stat-row";
+  row.innerHTML = `
+    <span class="stat-name"></span>
+    <span class="stat-count"></span>`;
+  row.querySelector(".stat-name").textContent = name;
+  row.querySelector(".stat-count").textContent = count;
+  if (meta) {
+    const m = document.createElement("span");
+    m.className = "stat-meta";
+    m.textContent = meta;
+    row.querySelector(".stat-name").appendChild(m);
+  }
+  row.insertBefore(makeBar(count, max, color), row.querySelector(".stat-count"));
+  return row;
+}
+
+function renderStatsCoachView(stats) {
+  const coaches = Array.from(stats.byCoach.values()).sort((a, b) => b.total - a.total);
+  if (coaches.length === 0) return [emptyState("No lessons taught this month.")];
+
+  return coaches.map(c => {
+    const color = coachColors[c.name] || fallbackColor;
+    const card = document.createElement("section");
+    card.className = "stat-card";
+    card.style.setProperty("--card-color", color);
+
+    const head = document.createElement("header");
+    head.className = "stat-card-head";
+    head.innerHTML = `
+      <span class="stat-card-dot"></span>
+      <span class="stat-card-title"></span>
+      <span class="stat-card-total"><strong></strong> lessons</span>`;
+    head.querySelector(".stat-card-title").textContent = c.name;
+    head.querySelector(".stat-card-total strong").textContent = c.total;
+    card.appendChild(head);
+
+    const students = Array.from(c.students.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    const max = students.length ? students[0].count : 0;
+    const list = document.createElement("div");
+    list.className = "stat-list";
+    students.forEach(s => list.appendChild(statRow(s.name, s.count, max, color)));
+    card.appendChild(list);
+
+    const foot = document.createElement("p");
+    foot.className = "stat-card-foot";
+    foot.textContent = `${students.length} student${students.length === 1 ? "" : "s"}`;
+    card.appendChild(foot);
+
+    return card;
+  });
+}
+
+function renderStatsStudentView(stats) {
+  const students = Array.from(stats.byStudent.values())
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  if (students.length === 0) return [emptyState("No lessons booked this month.")];
+
+  const archived = archivedKeys();
+
+  return students.map(s => {
+    const card = document.createElement("section");
+    card.className = "stat-card";
+    card.style.setProperty("--card-color", "var(--brand-500)");
+
+    const head = document.createElement("header");
+    head.className = "stat-card-head";
+    head.innerHTML = `
+      <span class="stat-card-title"></span>
+      <span class="stat-card-total"><strong></strong> lessons</span>`;
+    head.querySelector(".stat-card-title").textContent = s.name;
+    head.querySelector(".stat-card-total strong").textContent = s.total;
+
+    if (archived.has(s.key)) {
+      const tag = document.createElement("span");
+      tag.className = "stat-tag";
+      tag.textContent = "deleted";
+      tag.title = "Removed from the roster — their past lessons still count";
+      head.querySelector(".stat-card-title").appendChild(tag);
+    }
+    card.appendChild(head);
+
+    const coaches = Array.from(s.coaches.entries()).sort((a, b) => b[1] - a[1]);
+    const max = coaches.length ? coaches[0][1] : 0;
+    const list = document.createElement("div");
+    list.className = "stat-list";
+    coaches.forEach(([coach, count]) =>
+      list.appendChild(statRow(coach, count, max, coachColors[coach] || fallbackColor)));
+    card.appendChild(list);
+
+    const types = Array.from(s.types.entries())
+      .map(([t, n]) => `${n}× ${typeLabel[t] || t}`)
+      .join(" · ");
+    const foot = document.createElement("p");
+    foot.className = "stat-card-foot";
+    foot.textContent = types;
+    card.appendChild(foot);
+
+    return card;
+  });
+}
+
+function renderRosterView() {
+  const nodes = [];
+  const active = activeRoster();
+  const archived = studentCache.filter(s => s.archived);
+
+  const note = document.createElement("p");
+  note.className = "stats-note";
+  note.textContent = "Students are added here by hand — booking a lesson never adds one. Deleting a student only removes them from the picker; every lesson they have already had stays in the monthly totals.";
+  nodes.push(note);
+
+  const addForm = document.createElement("form");
+  addForm.className = "roster-add";
+  addForm.innerHTML = `
+    <input type="text" class="roster-add-input" placeholder="Add a student by name" autocomplete="off">
+    <button type="submit" class="btn primary roster-add-btn">Add</button>`;
+  const addInput = addForm.querySelector(".roster-add-input");
+
+  addForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    const name = addInput.value.trim();
+    if (!name) return;
+    try {
+      const created = await addStudent(name);
+      if (created) {
+        toast(`${name} added to the roster`, "success");
+        addInput.value = "";
+        renderStats();
+        renderStudentPicker();
+      } else {
+        toast(`${name} is already on the roster`, "warn");
+      }
+    } catch (err) {
+      console.error(err);
+      toast("Could not add the student", "error");
+    }
+  });
+  nodes.push(addForm);
+
+  if (active.length === 0) {
+    nodes.push(emptyState("No students on the roster yet."));
+  } else {
+    // The roster grows to hundreds of names, so filter rows in place rather
+    // than re-rendering — re-rendering would steal focus on every keystroke.
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "roster-search";
+    search.placeholder = `Search ${active.length} students…`;
+    search.autocomplete = "off";
+    nodes.push(search);
+
+    const list = document.createElement("div");
+    list.className = "roster-list";
+
+    search.addEventListener("input", () => {
+      const q = nameKey(search.value);
+      let shown = 0;
+      list.querySelectorAll(".roster-row").forEach(row => {
+        const hit = !q || row.dataset.key.includes(q);
+        row.classList.toggle("hidden", !hit);
+        if (hit) shown++;
+      });
+      list.classList.toggle("no-match", shown === 0);
+    });
+
+    active.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "roster-row";
+      row.dataset.key = s.key;
+      row.innerHTML = `
+        <span class="roster-name"></span>
+        <span class="roster-meta"></span>
+        <button type="button" class="roster-del icon-btn" aria-label="Delete student">&times;</button>`;
+      row.querySelector(".roster-name").textContent = s.name;
+      const coaches = Array.from(s.coaches);
+      row.querySelector(".roster-meta").textContent =
+        `${s.lessons} lesson${s.lessons === 1 ? "" : "s"}${coaches.length ? " · " + coaches.join(", ") : ""}`;
+      row.querySelector(".roster-del").addEventListener("click", async () => {
+        const ok = await confirmDialog(
+          `Delete ${s.name}?`,
+          "They will disappear from the student picker. Their lessons and every monthly total they appear in are kept.",
+          "Delete student",
+          "danger"
+        );
+        if (!ok) return;
+        try {
+          await archiveStudent(s);
+          toast(`${s.name} removed from the roster`, "success");
+          renderStats();
+          renderStudentPicker();
+        } catch (e) {
+          console.error(e);
+          toast("Could not delete the student", "error");
+        }
+      });
+      list.appendChild(row);
+    });
+    nodes.push(list);
+  }
+
+  if (archived.length > 0) {
+    const h = document.createElement("h3");
+    h.className = "roster-heading";
+    h.textContent = "Deleted";
+    nodes.push(h);
+
+    const list = document.createElement("div");
+    list.className = "roster-list";
+    archived.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "roster-row archived";
+      row.innerHTML = `
+        <span class="roster-name"></span>
+        <span class="roster-meta">still counted in past months</span>
+        <button type="button" class="roster-restore">Restore</button>`;
+      row.querySelector(".roster-name").textContent = s.name;
+      row.querySelector(".roster-restore").addEventListener("click", async () => {
+        try {
+          await restoreStudent(s.id);
+          toast(`${s.name} restored`, "success");
+          renderStats();
+          renderStudentPicker();
+        } catch (e) {
+          console.error(e);
+          toast("Could not restore the student", "error");
+        }
+      });
+      list.appendChild(row);
+    });
+    nodes.push(list);
+  }
+
+  return nodes;
+}
+
+function emptyState(text) {
+  const p = document.createElement("p");
+  p.className = "stats-empty";
+  p.textContent = text;
+  return p;
+}
+
+function renderStats() {
+  const stats = computeMonthStats(statsMonth);
+
+  statsMonthLabel.textContent = monthLabel(statsMonth);
+
+  const coachCount = stats.byCoach.size;
+  const studentCount = stats.byStudent.size;
+  statsSummary.innerHTML = `
+    <div class="stats-figure"><strong></strong><span>lessons</span></div>
+    <div class="stats-figure"><strong></strong><span>students</span></div>
+    <div class="stats-figure"><strong></strong><span>coaches</span></div>`;
+  const figures = statsSummary.querySelectorAll(".stats-figure strong");
+  figures[0].textContent = stats.total;
+  figures[1].textContent = studentCount;
+  figures[2].textContent = coachCount;
+
+  statsTabs.querySelectorAll(".stats-tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.tab === statsTab));
+
+  statsBody.innerHTML = "";
+  let nodes;
+  if (statsTab === "coach")        nodes = renderStatsCoachView(stats);
+  else if (statsTab === "student") nodes = renderStatsStudentView(stats);
+  else                             nodes = renderRosterView();
+  nodes.forEach(n => statsBody.appendChild(n));
+
+  if (statsTab !== "roster" && stats.total > 0) {
+    const note = document.createElement("p");
+    note.className = "stats-note";
+    const doubles = stats.total - stats.sessions;
+    note.textContent =
+      `Counted as ${stats.total} from ${stats.sessions} booked session${stats.sessions === 1 ? "" : "s"}` +
+      (doubles > 0 ? ` — a 90-minute double counts as two lessons.` : ".") +
+      (statsTab === "coach" ? " A lesson taught by two coaches counts for each of them, so these can add up to more than the month's total." : "");
+    statsBody.appendChild(note);
+  }
+}
+
+function openStats() {
+  statsModal.classList.remove("closing", "hidden");
+  document.body.classList.add("modal-open");
+  renderStats();
+}
+
+function closeStats() {
+  if (statsModal.classList.contains("hidden")) return;
+  statsModal.classList.add("closing");
+  setTimeout(() => {
+    statsModal.classList.add("hidden");
+    statsModal.classList.remove("closing");
+  }, 200);
+  if (modal.classList.contains("hidden")) document.body.classList.remove("modal-open");
+}
+
 function readStartFromInputs() {
   if (!lessonDateInput.value || !lessonTimeInput.value) return null;
   const [y, mo, d] = lessonDateInput.value.split("-").map(Number);
@@ -646,6 +1330,7 @@ function prepareAddModal(start) {
   resetBulkEditToggle();
   modalTitle.textContent = "Add lesson";
   deleteBtn.classList.add("hidden");
+  renderStudentPicker();
 }
 
 function openModal() {
@@ -750,6 +1435,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderTypeSegments();
   renderFilterOptions();
   setLessonType(LESSON_TYPES[0].value);
+  loadStudents().then(renderStudentPicker);
 
   calendar = new FullCalendar.Calendar(calendarEl, {
     initialView: "timeGridWeek",
@@ -758,8 +1444,8 @@ document.addEventListener("DOMContentLoaded", () => {
     selectMirror: true,
     nowIndicator: true,
     headerToolbar: { left: "prev,next today", center: "title", right: "timeGridDay,timeGridWeek" },
-    slotMinTime: "09:00:00",
-    slotMaxTime: "22:00:00",
+    slotMinTime: `${GRID_START}:00`,
+    slotMaxTime: `${GRID_END}:00`,
     slotDuration: "00:15:00",
     slotLabelInterval: "01:00:00",
     height: "auto",
@@ -858,6 +1544,7 @@ document.addEventListener("DOMContentLoaded", () => {
       resetBulkEditToggle();
       modalTitle.textContent = "Edit lesson";
       deleteBtn.classList.remove("hidden");
+      renderStudentPicker();
       openModal();
     }
   });
@@ -874,48 +1561,8 @@ document.addEventListener("DOMContentLoaded", () => {
       cancelledSet = cancelled;
 
       const snapshot = await getDocs(collection(db, "lessons"));
-      const rangeStart = fetchInfo.start;
-      const rangeEnd   = fetchInfo.end;
-      const viewWeekStart = weekStartMonday(rangeStart);
 
-      const coachFilterValue = coachFilter.value;
-      const typeFilterValue  = typeFilter.value;
-
-      const cache  = [];
-      const events = [];
-
-      const pushEvent = (rec, startDate) => {
-        const occISO = startDate.toISOString();
-        if (cancelled.has(`${rec.id}__${occISO}`)) return;
-
-        const endDate = addMinutes(startDate, rec.durationMins);
-        if (endDate <= rangeStart || startDate >= rangeEnd) return;
-
-        // Filters affect what is drawn, never what goes into the cache —
-        // a hidden lesson must still count as a conflict.
-        if (coachFilterValue && !rec.coach.includes(coachFilterValue)) return;
-        if (typeFilterValue && rec.lessonType !== typeFilterValue) return;
-
-        const color = getEventColor(rec.coach, rec.lessonType);
-
-        events.push({
-          title: rec.coach.length ? `${rec.title} (${rec.coach.join(", ")})` : rec.title,
-          start: occISO,
-          end: endDate.toISOString(),
-          backgroundColor: color,
-          borderColor: color,
-          extendedProps: {
-            docId: rec.id,
-            baseTitle: rec.title,        // avoids re-parsing the title out of the label
-            coach: rec.coach,
-            lessonType: rec.lessonType,
-            repeatWeekly: rec.repeatWeekly,
-            occStart: occISO,
-            repeatEndDate: rec.repeatEndDate
-          }
-        });
-      };
-
+      const cache = [];
       snapshot.forEach(docSnap => {
         const d = docSnap.data();
         const baseStart = new Date(d.start);
@@ -926,7 +1573,7 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
 
-        const rec = {
+        cache.push({
           id: docSnap.id,
           title: d.title || "Untitled lesson",
           coach: Array.isArray(d.coach) ? d.coach : d.coach ? [d.coach] : [],
@@ -935,28 +1582,41 @@ document.addEventListener("DOMContentLoaded", () => {
           repeatEndDate: d.repeatEndDate || null,
           start: d.start,
           durationMins: Math.max(1, Math.round((baseEnd - baseStart) / 60000))
-        };
-        cache.push(rec);
-
-        if (!rec.repeatWeekly) {
-          pushEvent(rec, baseStart);
-          return;
-        }
-
-        const baseWeekStart = weekStartMonday(baseStart);
-        const startOffset = Math.max(Math.round((viewWeekStart - baseWeekStart) / WEEK_MS), 0);
-        const endLimit = rec.repeatEndDate ? new Date(rec.repeatEndDate) : null;
-
-        // Bounded loop — a bad date can never spin forever
-        for (let i = 0; i < 60; i++) {
-          const occStart = addDays(baseStart, (startOffset + i) * 7);
-          if (endLimit && occStart > endLimit) break;
-          if (occStart >= rangeEnd) break;
-          pushEvent(rec, occStart);
-        }
+        });
       });
-
       lessonCache = cache;
+
+      const coachFilterValue = coachFilter.value;
+      const typeFilterValue  = typeFilter.value;
+
+      // Filters affect what is drawn, never what goes into the cache —
+      // a hidden lesson must still count as a conflict and in the stats.
+      const events = occurrencesInRange(fetchInfo.start, fetchInfo.end)
+        .filter(({ lesson }) =>
+          (!coachFilterValue || lesson.coach.includes(coachFilterValue)) &&
+          (!typeFilterValue  || lesson.lessonType === typeFilterValue))
+        .map(({ lesson, start, end }) => {
+          const color = getEventColor(lesson.coach, lesson.lessonType);
+          const occISO = start.toISOString();
+          return {
+            title: lesson.coach.length ? `${lesson.title} (${lesson.coach.join(", ")})` : lesson.title,
+            start: occISO,
+            end: end.toISOString(),
+            backgroundColor: color,
+            borderColor: color,
+            extendedProps: {
+              docId: lesson.id,
+              baseTitle: lesson.title,   // avoids re-parsing the title out of the label
+              coach: lesson.coach,
+              lessonType: lesson.lessonType,
+              repeatWeekly: lesson.repeatWeekly,
+              occStart: occISO,
+              repeatEndDate: lesson.repeatEndDate
+            }
+          };
+        });
+
+      renderStudentPicker();
       successCallback(events);
     } catch (e) {
       console.error(e);
@@ -992,7 +1652,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // A confirm dialog on top owns Escape first — otherwise backing out of
     // "Save anyway?" would dismiss the whole lesson form too.
     if (dialogHost.children.length > 0) return;
-    if (!modal.classList.contains("hidden")) closeModal();
+    if (!modal.classList.contains("hidden")) { closeModal(); return; }
+    if (!statsModal.classList.contains("hidden")) closeStats();
   });
 
   repeatWeeklyToggle.onchange = () => {
@@ -1006,6 +1667,37 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   [lessonDateInput, lessonTimeInput].forEach(el => el.addEventListener("change", updateConflictPreview));
+
+  // Typing filters the picker, so an existing student is one tap away
+  titleInput.addEventListener("input", renderStudentPicker);
+
+  /* ===== Stats panel ===== */
+
+  statsBtn.onclick = () => {
+    statsMonth = calendar ? new Date(calendar.getDate()) : new Date();
+    statsTab = "coach";
+    openStats();
+  };
+
+  closeStatsBtn.onclick = closeStats;
+  statsBackdrop.addEventListener("click", closeStats);
+
+  statsPrevBtn.onclick = () => {
+    statsMonth = new Date(statsMonth.getFullYear(), statsMonth.getMonth() - 1, 1);
+    renderStats();
+  };
+
+  statsNextBtn.onclick = () => {
+    statsMonth = new Date(statsMonth.getFullYear(), statsMonth.getMonth() + 1, 1);
+    renderStats();
+  };
+
+  statsTabs.addEventListener("click", e => {
+    const tab = e.target.closest(".stats-tab");
+    if (!tab) return;
+    statsTab = tab.dataset.tab;
+    renderStats();
+  });
 
   coachFilter.onchange = () => { syncLegendActive(); calendar.refetchEvents(); };
   typeFilter.onchange  = () => calendar.refetchEvents();
@@ -1121,6 +1813,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const end = addMinutes(start, typeDuration[lessonType] ?? 45);
 
+    // Hard policy: never store a lesson the grid cannot show. Not a warning,
+    // and not something "Save anyway" can get past.
+    const grid = checkWithinGrid(start, end);
+    if (!grid.ok) {
+      showConflictNotice([], { available: true, status: null }, grid);
+      setSaveBlocked(true);
+      toast(grid.reason, "warn");
+      return;
+    }
+
     // Warn about clashes, but let the boss decide.
     const conflicts = findConflicts(
       start, end,
@@ -1163,6 +1865,9 @@ document.addEventListener("DOMContentLoaded", () => {
         toast(`${typeLabel[lessonType]} added`, "success");
         closeModal();
       }
+
+      // Deliberately does NOT touch the students collection — the roster is
+      // built by hand from the Students tab, never as a side effect of saving.
       calendar.refetchEvents();
     } catch (e) {
       console.error(e);
@@ -1170,7 +1875,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } finally {
       saving = false;
       saveBtn.classList.remove("loading");
-      saveBtn.disabled = false;
+      saveBtn.disabled = saveBlocked;
     }
   };
 

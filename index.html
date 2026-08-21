@@ -48,6 +48,13 @@
       </select>
     </div>
 
+    <button id="statsBtn" class="stats-btn" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>
+      </svg>
+      <span>Stats</span>
+    </button>
+
     <button id="themeToggle" class="theme-toggle" type="button"
             role="switch" aria-checked="false" aria-label="Switch to dark mode">
       <span class="theme-toggle-thumb" aria-hidden="true">
@@ -81,8 +88,9 @@
 
     <div class="modal-body">
       <div class="field">
-        <label class="field-label" for="lessonTitle">Lesson name</label>
-        <input id="lessonTitle" type="text" placeholder="e.g. Salsa basics" autocomplete="off">
+        <label class="field-label" for="lessonTitle">Student</label>
+        <input id="lessonTitle" type="text" placeholder="Type a name, or pick below" autocomplete="off">
+        <div id="studentPicker" class="student-picker"></div>
       </div>
 
       <div class="field">
@@ -102,7 +110,7 @@
         </div>
         <div class="field">
           <label class="field-label" for="lessonTime">Start time</label>
-          <input type="time" id="lessonTime">
+          <input type="time" id="lessonTime" min="09:00" max="22:00">
         </div>
       </div>
 
@@ -141,6 +149,34 @@
       <button id="deleteLesson" class="btn danger hidden">Delete</button>
       <button id="cancelLesson" class="btn ghost">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Monthly stats ===== -->
+<div id="statsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="statsTitle">
+  <div class="modal-backdrop"></div>
+
+  <div class="modal-content stats-content">
+    <div class="modal-head">
+      <h2 id="statsTitle">Lesson stats</h2>
+      <button type="button" id="closeStats" class="icon-btn" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="stats-monthbar">
+      <button type="button" id="statsPrev" class="month-nav" aria-label="Previous month">&lsaquo;</button>
+      <span id="statsMonthLabel" class="stats-month-label"></span>
+      <button type="button" id="statsNext" class="month-nav" aria-label="Next month">&rsaquo;</button>
+    </div>
+
+    <div id="statsSummary" class="stats-summary"></div>
+
+    <div id="statsTabs" class="stats-tabs" role="tablist">
+      <button type="button" class="stats-tab active" data-tab="coach" role="tab">By coach</button>
+      <button type="button" class="stats-tab" data-tab="student" role="tab">By student</button>
+      <button type="button" class="stats-tab" data-tab="roster" role="tab">Students</button>
+    </div>
+
+    <div id="statsBody" class="modal-body stats-body"></div>
   </div>
 </div>
 
