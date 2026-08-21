@@ -188,6 +188,18 @@ function formatOrdinal(n) {
   }
 }
 
+/**
+ * Phones lay the grid out at real device width now that there is a viewport
+ * meta tag, and FullCalendar decides its own row heights — CSS cannot shrink
+ * them. Halving the number of rows (30-minute slots instead of 15) is what
+ * actually keeps the whole 09:00-22:00 week on screen. Event positions are
+ * computed from times, not slot boundaries, so a 45-minute lesson still lands
+ * in the right place.
+ */
+function phoneLayout() {
+  return window.innerWidth < 600;
+}
+
 function describeOccurrence(date) {
   return date.toLocaleString("en-GB", {
     weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"
@@ -1440,14 +1452,18 @@ document.addEventListener("DOMContentLoaded", () => {
   calendar = new FullCalendar.Calendar(calendarEl, {
     initialView: "timeGridWeek",
     firstDay: 1,
+    // Every lesson and every hall block is timed, so the all-day strip was
+    // always empty — it just cost ~50px of grid on a phone.
+    allDaySlot: false,
     selectable: true,
     selectMirror: true,
     nowIndicator: true,
     headerToolbar: { left: "prev,next today", center: "title", right: "timeGridDay,timeGridWeek" },
     slotMinTime: `${GRID_START}:00`,
     slotMaxTime: `${GRID_END}:00`,
-    slotDuration: "00:15:00",
+    slotDuration: phoneLayout() ? "00:30:00" : "00:15:00",
     slotLabelInterval: "01:00:00",
+    displayEventEnd: !phoneLayout(),
     height: "auto",
     contentHeight: "auto",
 
@@ -1599,7 +1615,11 @@ document.addEventListener("DOMContentLoaded", () => {
           const color = getEventColor(lesson.coach, lesson.lessonType);
           const occISO = start.toISOString();
           return {
-            title: lesson.coach.length ? `${lesson.title} (${lesson.coach.join(", ")})` : lesson.title,
+            // On a phone the block colour already identifies the coach, and the
+            // suffix would push the student's name out of a 50px column.
+            title: lesson.coach.length && !phoneLayout()
+              ? `${lesson.title} (${lesson.coach.join(", ")})`
+              : lesson.title,
             start: occISO,
             end: end.toISOString(),
             backgroundColor: color,
@@ -1632,6 +1652,17 @@ document.addEventListener("DOMContentLoaded", () => {
   calendar.on("datesSet", () => {
     renderHallAvailability();
     calendar.refetchEvents();
+  });
+
+  // Keep the slot density in step when rotating or resizing across the breakpoint
+  let lastPhone = phoneLayout();
+  window.addEventListener("resize", () => {
+    const now = phoneLayout();
+    if (now === lastPhone) return;
+    lastPhone = now;
+    calendar.setOption("slotDuration", now ? "00:30:00" : "00:15:00");
+    calendar.setOption("displayEventEnd", !now);
+    calendar.refetchEvents(); // titles carry the coach only on wide screens
   });
 
   /* ===== Modal wiring ===== */

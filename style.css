@@ -1035,7 +1035,6 @@ h1 {
 }
 
 @media (max-width: 599px) {
-  .fc-timegrid-slot { height: 38px !important; }
 
   .page-header { padding: 16px 12px 4px; }
 
@@ -1541,4 +1540,82 @@ h1 {
 
 a[href*="netlify.com"] {
   display: none;
+}
+/* ===================================================================
+   Phone density
+
+   Before there was a viewport meta tag, phones laid the page out at ~980px
+   and scaled it down, which is why the whole week used to fit. Now that it
+   renders at real device width the grid has to be sized for the screen, or
+   a single day is taller than the phone.
+
+   Target is roughly the old on-screen size: ~16px per 15-minute slot, so
+   09:00-22:00 fits without scrolling, but with crisper, larger text than
+   the old scaled-down view had.
+   =================================================================== */
+@media (max-width: 599px) {
+  /* Row height is not settable from CSS here - FullCalendar computes the grid
+     height itself and stretches the rows to fill it. The number of rows is
+     halved instead, via slotDuration in app.js. */
+  .fc-timegrid-slot { padding: 0 !important; }
+
+  /* The cushion sits inside a wrapper frame that keeps the inherited 16px
+     font. That frame is what actually holds the row open, so it has to shrink
+     too — styling the cushion alone does nothing. */
+  .fc .fc-timegrid-slot-label-frame,
+  .fc .fc-timegrid-slot-label-cushion {
+    font-size: 8.5px;
+    line-height: 1;
+  }
+  .fc .fc-timegrid-slot-label-cushion { padding: 0 3px; }
+  .fc .fc-timegrid-axis-cushion { font-size: 8px; padding: 2px; }
+  .fc .fc-timegrid-axis { padding: 0; }
+
+  .fc .fc-col-header-cell-cushion { padding: 5px 1px; font-size: 10px; }
+
+  /* Lesson blocks: small but sharp, and tight enough to fit a 45-min box */
+  .fc-timegrid-event { border-radius: 4px !important; }
+  .fc-timegrid-event .fc-event-main { padding: 1px 3px; }
+  .fc-timegrid-event .fc-event-time,
+  .fc-timegrid-event .fc-event-title {
+    font-size: 8.5px;
+    line-height: 1.16;
+    white-space: normal;
+    overflow: hidden;
+  }
+  .fc-timegrid-event .fc-event-time { font-weight: 700; }
+
+  /* Hover lift is meaningless on touch and only causes overlap */
+  .fc-timegrid-event:hover { transform: none; box-shadow: 0 1px 3px rgba(0,0,0,.18); filter: none; }
+
+  .fc .fc-timegrid-now-indicator-arrow { display: none; }
+
+  /* The add button floats over the grid, so it needs no reserved space */
+  #calendar { margin: 8px 6px 24px; padding: 6px; }
+
+  /* Give the grid as much of the screen as possible */
+  .page-header { padding: 10px 12px 2px; }
+  h1 { font-size: 1.05rem; }
+  .toolbar { gap: 7px; margin-top: 9px; padding: 0 8px; }
+
+  .coach-legend { gap: 5px; }
+  .coach-legend-item { padding: 4px 9px; font-size: 11px; gap: 5px; }
+  .coach-color-box { width: 9px; height: 9px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--coach-color, var(--brand-500)) 22%, transparent); }
+
+  .filter-label { display: none; }
+  .filter-controls { width: 100%; gap: 6px; }
+  .filter-select { padding: 7px 26px 7px 10px; font-size: 11.5px; }
+  .select-wrap::after { right: 10px; width: 6px; height: 6px; }
+
+  .fc .fc-toolbar { gap: 6px; }
+  .fc .fc-toolbar-title { font-size: .9rem; }
+  .fc .fc-button { padding: 5px 9px; font-size: 11.5px; }
+  .fc .fc-toolbar.fc-header-toolbar { margin-bottom: 8px; }
+}
+
+/* Very narrow phones need one more notch down to keep the week on screen */
+@media (max-width: 380px) {
+  .fc-timegrid-event .fc-event-time,
+  .fc-timegrid-event .fc-event-title { font-size: 8px; }
+  .fc .fc-col-header-cell-cushion { font-size: 9px; }
 }
