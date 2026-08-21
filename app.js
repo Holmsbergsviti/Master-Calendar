@@ -8,9 +8,9 @@ import { db } from "./firebase.js";
 
 const COACHES = [
   { name: "Vlad",       color: "#3b82f6" },
-  { name: "Ana",        color: "#10b981" },
+  { name: "Ana",        color: "#ec4899" },
   { name: "Petar Boss", color: "#f59e0b" },
-  { name: "Milan",      color: "#ec4899" }
+  { name: "Milan",      color: "#10b981" }
 ];
 
 const LESSON_TYPES = [
