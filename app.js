@@ -68,7 +68,8 @@ const titleInput         = document.getElementById("lessonTitle");
 const coachChips         = document.getElementById("coachChips");
 const typeSegment        = document.getElementById("typeSegment");
 const lessonDateInput    = document.getElementById("lessonDate");
-const lessonTimeInput    = document.getElementById("lessonTime");
+const lessonHour         = document.getElementById("lessonHour");
+const lessonMinute       = document.getElementById("lessonMinute");
 const saveBtn            = document.getElementById("saveLesson");
 const cancelBtn          = document.getElementById("cancelLesson");
 const closeModalBtn      = document.getElementById("closeModal");
@@ -1310,28 +1311,56 @@ function closeStats() {
   if (modal.classList.contains("hidden")) document.body.classList.remove("modal-open");
 }
 
-/** Rounds the start time to the nearest :00 / :15 / :30 / :45. */
-function snapTimeToQuarter() {
-  const v = lessonTimeInput.value;
-  if (!v) return;
+/* =====================================================================
+   Start time
 
-  const [h, m] = v.split(":").map(Number);
+   <input type="time"> cannot be restricted to quarter hours: Chrome's picker
+   lists every minute regardless of step="900". Two plain selects are the only
+   way to actually offer four choices, and they behave the same everywhere.
+   ===================================================================== */
+
+const MINUTE_OPTIONS = ["00", "15", "30", "45"];
+
+function renderTimeSelects() {
+  lessonHour.innerHTML = "";
+  const firstHour = Math.floor(GRID_START_MIN / 60);
+  const lastHour  = Math.ceil(GRID_END_MIN / 60) - 1; // a lesson can never start at closing time
+  for (let h = firstHour; h <= lastHour; h++) {
+    const o = document.createElement("option");
+    o.value = o.textContent = String(h).padStart(2, "0");
+    lessonHour.appendChild(o);
+  }
+
+  lessonMinute.innerHTML = "";
+  MINUTE_OPTIONS.forEach(m => {
+    const o = document.createElement("option");
+    o.value = o.textContent = m;
+    lessonMinute.appendChild(o);
+  });
+}
+
+function getTimeValue() {
+  return `${lessonHour.value}:${lessonMinute.value}`;
+}
+
+/** Accepts "HH:MM"; an odd minute from an older lesson snaps to the nearest quarter. */
+function setTimeValue(hhmm) {
+  const [h, m] = String(hhmm || "").split(":").map(Number);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return;
 
-  const snapped = Math.round((h * 60 + m) / 15) * 15;
-  if (snapped === h * 60 + m) return;
+  const total = h * 60 + Math.round(m / 15) * 15; // 09:53 -> 10:00, not 09:45
+  const hh = String(Math.floor(total / 60) % 24).padStart(2, "0");
+  const mm = String(total % 60).padStart(2, "0");
 
-  // Deliberately not clamped to the grid — an out-of-hours time still needs to
-  // reach checkWithinGrid so the user is told why it is refused.
-  const hh = String(Math.floor(snapped / 60) % 24).padStart(2, "0");
-  const mm = String(snapped % 60).padStart(2, "0");
-  lessonTimeInput.value = `${hh}:${mm}`;
+  lessonHour.value = hh;
+  if (!lessonHour.value) lessonHour.selectedIndex = 0; // hour outside the grid has no option
+  lessonMinute.value = mm;
 }
 
 function readStartFromInputs() {
-  if (!lessonDateInput.value || !lessonTimeInput.value) return null;
+  if (!lessonDateInput.value) return null;
   const [y, mo, d] = lessonDateInput.value.split("-").map(Number);
-  const [h, mi]    = lessonTimeInput.value.split(":").map(Number);
+  const [h, mi]    = getTimeValue().split(":").map(Number);
   const start = new Date(y, mo - 1, d, h, mi, 0, 0);
   return isValidDate(start) ? start : null;
 }
@@ -1350,7 +1379,7 @@ function prepareAddModal(start) {
   selectedEvent = null;
   titleInput.value = "";
   lessonDateInput.value = formatDateInput(start);
-  lessonTimeInput.value = formatTimeInput(start);
+  setTimeValue(formatTimeInput(start));
   setLessonType(LESSON_TYPES[0].value);
   setSelectedCoaches([]);
   repeatWeeklyToggle.checked = false;
@@ -1461,6 +1490,7 @@ async function deleteWholeSeries(parentId) {
 document.addEventListener("DOMContentLoaded", () => {
 
   initTheme();
+  renderTimeSelects();
   renderCoachChips();
   renderTypeSegments();
   renderFilterOptions();
@@ -1564,7 +1594,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       titleInput.value      = props.baseTitle || info.event.title;
       lessonDateInput.value = formatDateInput(info.event.start);
-      lessonTimeInput.value = formatTimeInput(info.event.start);
+      setTimeValue(formatTimeInput(info.event.start));
       setLessonType(props.lessonType || "class");
       setSelectedCoaches(props.coach);
 
@@ -1720,10 +1750,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // step="900" makes the native picker offer quarter hours; this catches a
   // typed value. Only fires on user edits, so opening an existing lesson that
   // sits on an odd minute never silently moves it.
-  lessonTimeInput.addEventListener("change", () => {
-    snapTimeToQuarter();
-    updateConflictPreview();
-  });
+  [lessonHour, lessonMinute].forEach(el => el.addEventListener("change", updateConflictPreview));
 
   // Typing filters the picker, so an existing student is one tap away
   titleInput.addEventListener("input", renderStudentPicker);

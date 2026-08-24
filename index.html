@@ -109,8 +109,12 @@
           <input type="date" id="lessonDate">
         </div>
         <div class="field">
-          <label class="field-label" for="lessonTime">Start time</label>
-          <input type="time" id="lessonTime" min="09:00" max="22:00" step="900">
+          <span class="field-label">Start time</span>
+          <div class="time-select">
+            <select id="lessonHour" aria-label="Hour"></select>
+            <span class="time-sep">:</span>
+            <select id="lessonMinute" aria-label="Minutes"></select>
+          </div>
         </div>
       </div>
 
