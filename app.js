@@ -1310,6 +1310,24 @@ function closeStats() {
   if (modal.classList.contains("hidden")) document.body.classList.remove("modal-open");
 }
 
+/** Rounds the start time to the nearest :00 / :15 / :30 / :45. */
+function snapTimeToQuarter() {
+  const v = lessonTimeInput.value;
+  if (!v) return;
+
+  const [h, m] = v.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return;
+
+  const snapped = Math.round((h * 60 + m) / 15) * 15;
+  if (snapped === h * 60 + m) return;
+
+  // Deliberately not clamped to the grid — an out-of-hours time still needs to
+  // reach checkWithinGrid so the user is told why it is refused.
+  const hh = String(Math.floor(snapped / 60) % 24).padStart(2, "0");
+  const mm = String(snapped % 60).padStart(2, "0");
+  lessonTimeInput.value = `${hh}:${mm}`;
+}
+
 function readStartFromInputs() {
   if (!lessonDateInput.value || !lessonTimeInput.value) return null;
   const [y, mo, d] = lessonDateInput.value.split("-").map(Number);
@@ -1697,7 +1715,15 @@ document.addEventListener("DOMContentLoaded", () => {
     editAllFutureBtn.textContent = editingAllFuture ? "✓ Editing all future" : "Edit all future";
   };
 
-  [lessonDateInput, lessonTimeInput].forEach(el => el.addEventListener("change", updateConflictPreview));
+  lessonDateInput.addEventListener("change", updateConflictPreview);
+
+  // step="900" makes the native picker offer quarter hours; this catches a
+  // typed value. Only fires on user edits, so opening an existing lesson that
+  // sits on an odd minute never silently moves it.
+  lessonTimeInput.addEventListener("change", () => {
+    snapTimeToQuarter();
+    updateConflictPreview();
+  });
 
   // Typing filters the picker, so an existing student is one tap away
   titleInput.addEventListener("input", renderStudentPicker);
