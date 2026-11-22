@@ -347,6 +347,36 @@ async function confirmDialog(title, message, confirmLabel = "Confirm", tone = "d
 }
 
 /* =====================================================================
+   Lesson block content
+
+   Time, name and coaches on separate lines so each can be dropped on its
+   own as the block gets narrow (see the container queries in style.css).
+   On a phone the block colour already identifies the coach, so the coach
+   line only shows when it is a group class with several coaches or on
+   wider screens.
+   ===================================================================== */
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+}
+
+function renderEventContent(arg) {
+  if (arg.event.display === "background") return true;
+  const props = arg.event.extendedProps;
+  const coaches = Array.isArray(props.coach) ? props.coach : [];
+  const name = props.baseTitle || arg.event.title;
+  const time = arg.timeText ? `<span class="ev-time">${escapeHtml(arg.timeText)}</span>` : "";
+  const coachLine = coaches.length
+    ? `<span class="ev-coach">${escapeHtml(coaches.join(", "))}</span>`
+    : "";
+  return {
+    html: `<div class="ev" title="${escapeHtml(`${arg.timeText} ${name}${coaches.length ? " (" + coaches.join(", ") + ")" : ""}`)}">` +
+      `${time}<span class="ev-title">${escapeHtml(name)}</span>${coachLine}</div>`
+  };
+}
+
+/* =====================================================================
    Colours
    ===================================================================== */
 
@@ -774,22 +804,73 @@ function lessonWeight(type) {
 }
 
 /**
- * A lesson with two coaches counts for each of them, so the coach totals can
- * add up to more than the month's lesson count. Doubles count as two. Both
- * are spelled out in the UI.
+ * Group classes (LADY LATIN, PRO AM, KIDS...) are reported apart from
+ * individual lessons. A lesson is a group class when it was booked as the
+ * "Group" type, or when it has the same name as a lesson that ever was —
+ * older group bookings were sometimes saved as a plain class.
+ */
+function groupKeys() {
+  const keys = new Set();
+  lessonCache.forEach(l => {
+    if (l.lessonType === "group") keys.add(nameKey(l.title));
+  });
+  return keys;
+}
+
+function isGroupLesson(lesson, keys = groupKeys()) {
+  return lesson.lessonType === "group" || keys.has(nameKey(lesson.title));
+}
+
+/**
+ * Individual lessons: a lesson with two coaches counts for each of them, so
+ * the coach totals can add up to more than the month's lesson count, and a
+ * double counts as two. Group classes: every session counts once, per group
+ * and for each coach teaching it. Both are spelled out in the UI.
  */
 function computeMonthStats(monthDate) {
   const { start, end } = monthRange(monthDate);
+  const keys = groupKeys();
   const byCoach = new Map();
   const byStudent = new Map();
+  const byGroup = new Map();
   let total = 0;
   let sessions = 0;
+  let groupTotal = 0;
+
+  const coachEntry = c => {
+    let coach = byCoach.get(c);
+    if (!coach) {
+      coach = { name: c, total: 0, groupTotal: 0, students: new Map(), groups: new Map() };
+      byCoach.set(c, coach);
+    }
+    return coach;
+  };
 
   for (const occ of occurrencesInRange(start, end)) {
     if (occ.start < start || occ.start >= end) continue;
     const l = occ.lesson;
     const key = nameKey(l.title);
     if (!key) continue;
+    const coaches = l.coach.length ? l.coach : ["Unassigned"];
+
+    if (isGroupLesson(l, keys)) {
+      groupTotal++;
+      let group = byGroup.get(key);
+      if (!group) {
+        group = { key, name: l.title.trim(), total: 0, coaches: new Map() };
+        byGroup.set(key, group);
+      }
+      group.total++;
+      for (const c of coaches) {
+        group.coaches.set(c, (group.coaches.get(c) || 0) + 1);
+        const coach = coachEntry(c);
+        coach.groupTotal++;
+        const g = coach.groups.get(key) || { key, name: group.name, count: 0 };
+        g.count++;
+        coach.groups.set(key, g);
+      }
+      continue;
+    }
 
     const weight = lessonWeight(l.lessonType);
     total += weight;
@@ -805,12 +886,9 @@ function computeMonthStats(monthDate) {
     // types stays a count of actual sessions booked, not weighted
     student.types.set(l.lessonType, (student.types.get(l.lessonType) || 0) + 1);
 
-    const coaches = l.coach.length ? l.coach : ["Unassigned"];
     for (const c of coaches) {
       student.coaches.set(c, (student.coaches.get(c) || 0) + weight);
-
-      let coach = byCoach.get(c);
-      if (!coach) { coach = { name: c, total: 0, students: new Map() }; byCoach.set(c, coach); }
+      const coach = coachEntry(c);
       coach.total += weight;
       const s = coach.students.get(key) || { key, name, count: 0 };
       s.count += weight;
@@ -818,7 +896,7 @@ function computeMonthStats(monthDate) {
     }
   }
 
-  return { start, end, total, sessions, byCoach, byStudent };
+  return { start, end, total, sessions, groupTotal, byCoach, byStudent, byGroup };
 }
 
 /* =====================================================================
@@ -1031,9 +1109,21 @@ function statRow(name, count, max, color, meta) {
   return row;
 }
 
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function statSubhead(text) {
+  const h = document.createElement("h4");
+  h.className = "stat-subhead";
+  h.textContent = text;
+  return h;
+}
+
 function renderStatsCoachView(stats) {
-  const coaches = Array.from(stats.byCoach.values()).sort((a, b) => b.total - a.total);
-  if (coaches.length === 0) return [emptyState("No lessons taught this month.")];
+  const coaches = Array.from(stats.byCoach.values())
+    .sort((a, b) => b.total - a.total || b.groupTotal - a.groupTotal);
+  if (coaches.length === 0) return [emptyState("Nothing taught this month.")];
 
   return coaches.map(c => {
     const color = coachColors[c.name] || fallbackColor;
@@ -1046,22 +1136,67 @@ function renderStatsCoachView(stats) {
     head.innerHTML = `
       <span class="stat-card-dot"></span>
       <span class="stat-card-title"></span>
-      <span class="stat-card-total"><strong></strong> lessons</span>`;
+      <span class="stat-card-totals">
+        <span class="stat-pill"><strong></strong> individual</span>
+        <span class="stat-pill group"><strong></strong> group</span>
+      </span>`;
     head.querySelector(".stat-card-title").textContent = c.name;
-    head.querySelector(".stat-card-total strong").textContent = c.total;
+    const pills = head.querySelectorAll(".stat-pill strong");
+    pills[0].textContent = c.total;
+    pills[1].textContent = c.groupTotal;
     card.appendChild(head);
 
     const students = Array.from(c.students.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-    const max = students.length ? students[0].count : 0;
+    if (students.length) {
+      card.appendChild(statSubhead(`Individual lessons · ${plural(students.length, "student")}`));
+      const max = students[0].count;
+      const list = document.createElement("div");
+      list.className = "stat-list";
+      students.forEach(s => list.appendChild(statRow(s.name, s.count, max, color)));
+      card.appendChild(list);
+    }
+
+    const groups = Array.from(c.groups.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    if (groups.length) {
+      card.appendChild(statSubhead(`Group classes · ${plural(groups.length, "group")}`));
+      const max = groups[0].count;
+      const list = document.createElement("div");
+      list.className = "stat-list";
+      groups.forEach(g => list.appendChild(statRow(g.name, g.count, max, groupColor)));
+      card.appendChild(list);
+    }
+
+    return card;
+  });
+}
+
+function renderStatsGroupView(stats) {
+  const groups = Array.from(stats.byGroup.values())
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  if (groups.length === 0) return [emptyState("No group classes this month.")];
+
+  return groups.map(g => {
+    const card = document.createElement("section");
+    card.className = "stat-card";
+    card.style.setProperty("--card-color", groupColor);
+
+    const head = document.createElement("header");
+    head.className = "stat-card-head";
+    head.innerHTML = `
+      <span class="stat-card-dot"></span>
+      <span class="stat-card-title"></span>
+      <span class="stat-card-total"><strong></strong> classes</span>`;
+    head.querySelector(".stat-card-title").textContent = g.name;
+    head.querySelector(".stat-card-total strong").textContent = g.total;
+    card.appendChild(head);
+
+    const coaches = Array.from(g.coaches.entries()).sort((a, b) => b[1] - a[1]);
+    const max = coaches.length ? coaches[0][1] : 0;
     const list = document.createElement("div");
     list.className = "stat-list";
-    students.forEach(s => list.appendChild(statRow(s.name, s.count, max, color)));
+    coaches.forEach(([coach, count]) =>
+      list.appendChild(statRow(coach, count, max, coachColors[coach] || fallbackColor)));
     card.appendChild(list);
-
-    const foot = document.createElement("p");
-    foot.className = "stat-card-foot";
-    foot.textContent = `${students.length} student${students.length === 1 ? "" : "s"}`;
-    card.appendChild(foot);
 
     return card;
   });
@@ -1070,7 +1205,7 @@ function renderStatsCoachView(stats) {
 function renderStatsStudentView(stats) {
   const students = Array.from(stats.byStudent.values())
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
-  if (students.length === 0) return [emptyState("No lessons booked this month.")];
+  if (students.length === 0) return [emptyState("No individual lessons booked this month.")];
 
   const archived = archivedKeys();
 
@@ -1265,13 +1400,15 @@ function renderStats() {
   const coachCount = stats.byCoach.size;
   const studentCount = stats.byStudent.size;
   statsSummary.innerHTML = `
-    <div class="stats-figure"><strong></strong><span>lessons</span></div>
+    <div class="stats-figure"><strong></strong><span>individual lessons</span></div>
+    <div class="stats-figure group"><strong></strong><span>group classes</span></div>
     <div class="stats-figure"><strong></strong><span>students</span></div>
     <div class="stats-figure"><strong></strong><span>coaches</span></div>`;
   const figures = statsSummary.querySelectorAll(".stats-figure strong");
   figures[0].textContent = stats.total;
-  figures[1].textContent = studentCount;
-  figures[2].textContent = coachCount;
+  figures[1].textContent = stats.groupTotal;
+  figures[2].textContent = studentCount;
+  figures[3].textContent = coachCount;
 
   statsTabs.querySelectorAll(".stats-tab").forEach(t =>
     t.classList.toggle("active", t.dataset.tab === statsTab));
@@ -1280,19 +1417,29 @@ function renderStats() {
   let nodes;
   if (statsTab === "coach")        nodes = renderStatsCoachView(stats);
   else if (statsTab === "student") nodes = renderStatsStudentView(stats);
+  else if (statsTab === "group")   nodes = renderStatsGroupView(stats);
   else                             nodes = renderRosterView();
   nodes.forEach(n => statsBody.appendChild(n));
 
-  if (statsTab !== "roster" && stats.total > 0) {
+  if (statsTab !== "roster" && (stats.total > 0 || stats.groupTotal > 0)) {
     const note = document.createElement("p");
     note.className = "stats-note";
     const doubles = stats.total - stats.sessions;
-    note.textContent =
-      `Counted as ${stats.total} from ${stats.sessions} booked session${stats.sessions === 1 ? "" : "s"}` +
-      (doubles > 0 ? ` — a 90-minute double counts as two lessons.` : ".") +
-      (statsTab === "coach" ? " A lesson taught by two coaches counts for each of them, so these can add up to more than the month's total." : "");
+    const parts = [];
+    if (statsTab !== "group") {
+      parts.push(`${plural(stats.total, "individual lesson")} from ${plural(stats.sessions, "booked session")}` +
+        (doubles > 0 ? " — a 90-minute double counts as two." : "."));
+    }
+    if (statsTab !== "student") {
+      parts.push("Group classes count once per session and are never mixed into the individual lesson totals.");
+    }
+    if (statsTab === "coach") {
+      parts.push("A lesson or class taught by two coaches counts for each of them, so coach totals can add up to more than the month's total.");
+    }
+    note.textContent = parts.join(" ");
     statsBody.appendChild(note);
   }
+
 }
 
 function openStats() {
@@ -1398,7 +1545,33 @@ function openModal() {
   modal.classList.remove("closing", "hidden");
   document.body.classList.add("modal-open");
   updateConflictPreview();
-  requestAnimationFrame(() => titleInput.focus({ preventScroll: true }));
+  // On a phone, focusing straight away throws the keyboard over half the
+  // form before anything has been read — let the tap choose the field.
+  if (!phoneLayout()) requestAnimationFrame(() => titleInput.focus({ preventScroll: true }));
+  fitModalToViewport();
+}
+
+/**
+ * iOS keeps the layout viewport full height when the keyboard opens, so a
+ * fixed bottom sheet ends up behind the keyboard together with its Save
+ * button. Pin open modals to the visible part of the screen instead.
+ */
+function fitModalToViewport() {
+  const vv = window.visualViewport;
+  const open = [modal, statsModal].filter(m => !m.classList.contains("hidden"));
+  if (!vv) return;
+  const keyboardUp = window.innerHeight - vv.height > 80;
+  document.querySelectorAll(".modal").forEach(m => {
+    const fit = keyboardUp && open.includes(m);
+    m.classList.toggle("vv-fit", fit);
+    m.style.top    = fit ? `${vv.offsetTop}px` : "";
+    m.style.height = fit ? `${vv.height}px` : "";
+  });
+}
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", fitModalToViewport);
+  window.visualViewport.addEventListener("scroll", fitModalToViewport);
 }
 
 function closeModal() {
@@ -1410,6 +1583,8 @@ function closeModal() {
   }, 200);
 
   document.body.classList.remove("modal-open");
+  modal.classList.remove("vv-fit");
+  modal.style.top = modal.style.height = "";
   selectedEvent = null;
   resetBulkEditToggle();
   hideConflictNotice();
@@ -1512,6 +1687,15 @@ document.addEventListener("DOMContentLoaded", () => {
     slotDuration: phoneLayout() ? "00:30:00" : "00:15:00",
     slotLabelInterval: "01:00:00",
     displayEventEnd: !phoneLayout(),
+    // Lessons that run at the same time sit side by side in equal columns
+    // instead of FullCalendar's default cascade, where later blocks are drawn
+    // on top of earlier ones and hide their names.
+    slotEventOverlap: false,
+    // A phone day column is ~45px wide: three lessons side by side would be
+    // unreadable slivers, so show two and a "+1" that opens the full list.
+    eventMaxStack: phoneLayout() ? 2 : undefined,
+    moreLinkContent: arg => `+${arg.num}`,
+    eventContent: renderEventContent,
     height: "auto",
     contentHeight: "auto",
 
@@ -1663,11 +1847,7 @@ document.addEventListener("DOMContentLoaded", () => {
           const color = getEventColor(lesson.coach, lesson.lessonType);
           const occISO = start.toISOString();
           return {
-            // On a phone the block colour already identifies the coach, and the
-            // suffix would push the student's name out of a 50px column.
-            title: lesson.coach.length && !phoneLayout()
-              ? `${lesson.title} (${lesson.coach.join(", ")})`
-              : lesson.title,
+            title: lesson.title,
             start: occISO,
             end: end.toISOString(),
             backgroundColor: color,
@@ -1710,7 +1890,7 @@ document.addEventListener("DOMContentLoaded", () => {
     lastPhone = now;
     calendar.setOption("slotDuration", now ? "00:30:00" : "00:15:00");
     calendar.setOption("displayEventEnd", !now);
-    calendar.refetchEvents(); // titles carry the coach only on wide screens
+    calendar.setOption("eventMaxStack", now ? 2 : undefined);
   });
 
   /* ===== Modal wiring ===== */
