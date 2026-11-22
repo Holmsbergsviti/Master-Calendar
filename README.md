@@ -6,7 +6,7 @@ A lightweight, zero-build scheduling calendar for a dance studio. Coaches and le
 
 - **Weekly timetable** built on [FullCalendar v6](https://fullcalendar.io/) (09:00–22:00 grid).
 - **Coaches**, colour-coded in a live legend — Vlad, Ana, Petar Boss, Milan.
-- **Lesson types** with fixed durations — Class (45 min), Double (90 min), Group (60 min).
+- **Lesson types** with fixed durations — Class (45 min), Double (90 min), Group (60 min), Meeting (60 min, never counted in the stats).
 - **Hall awareness** — a built-in schedule tracks when only the big hall, only the small hall, or neither is free, and bookings that fall outside the drawable hours are rejected outright.
 - **Recurring lessons** — repeat a lesson weekly up to a chosen end date.
 - **Filters** — narrow the view by coach or by lesson type.

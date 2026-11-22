@@ -16,13 +16,17 @@ const COACHES = [
 const LESSON_TYPES = [
   { value: "class",  label: "Class",  mins: 45 },
   { value: "double", label: "Double", mins: 90 },
-  { value: "group",  label: "Group",  mins: 60 }
+  { value: "group",  label: "Group",  mins: 60 },
+  // Staff meetings and anything else that blocks the hall but is not a lesson.
+  // Shown on the calendar, never counted in the stats.
+  { value: "meeting", label: "Meeting", mins: 60 }
 ];
 
 const coachColors  = Object.fromEntries(COACHES.map(c => [c.name, c.color]));
 const typeDuration = Object.fromEntries(LESSON_TYPES.map(t => [t.value, t.mins]));
 const typeLabel    = Object.fromEntries(LESSON_TYPES.map(t => [t.value, t.label]));
 const groupColor   = "#8b5cf6";
+const meetingColor = "#64748b";
 const fallbackColor = "#94a3b8";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -121,6 +125,133 @@ let cancelledSet = new Set();
 let studentCache = [];
 let statsMonth = new Date();
 let statsTab = "coach";
+
+/* =====================================================================
+   Lesson loading
+
+   Only the lessons near the weeks being looked at are downloaded, instead of
+   the whole history on every week change. Weekly repeats are always loaded
+   (there are few of them, and an old repeat can still land in this week).
+   Each window that has been fetched is remembered, so going back and forth
+   between weeks costs nothing; the visible week is re-read on every refetch
+   so saves and deletes always show up.
+   ===================================================================== */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const LOAD_PAD_MS = 28 * DAY_MS;          // fetch four weeks either side
+const lessonDocs = new Map();             // id -> lesson
+const cancelledByRange = new Map();       // key -> occStart ms
+let loadedSpans = [];                     // [[startMs, endMs], ...]
+let historyLoaded = false;
+// Names ever booked as a group class, from every month — not just the loaded
+// ones — so a LADY LATIN saved as a plain class is still seen as a group.
+let groupNameKeys = new Set();
+
+function toLesson(docSnap) {
+  const d = docSnap.data();
+  const baseStart = new Date(d.start);
+  const baseEnd   = new Date(d.end);
+  if (!isValidDate(baseStart) || !isValidDate(baseEnd)) {
+    console.warn(`Skipping lesson ${docSnap.id}: invalid start/end`, d.start, d.end);
+    return null;
+  }
+  return {
+    id: docSnap.id,
+    title: d.title || "Untitled lesson",
+    coach: Array.isArray(d.coach) ? d.coach : d.coach ? [d.coach] : [],
+    lessonType: d.lessonType || "class",
+    repeatWeekly: !!d.repeatWeekly,
+    repeatEndDate: d.repeatEndDate || null,
+    start: d.start,
+    durationMins: Math.max(1, Math.round((baseEnd - baseStart) / 60000))
+  };
+}
+
+function publishCache() {
+  lessonCache = Array.from(lessonDocs.values());
+  cancelledSet = new Set(cancelledByRange.keys());
+}
+
+function isCovered(startMs, endMs) {
+  return historyLoaded || loadedSpans.some(([a, b]) => a <= startMs && b >= endMs);
+}
+
+function addSpan(startMs, endMs) {
+  const spans = [...loadedSpans, [startMs, endMs]].sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const sp of spans) {
+    const last = merged[merged.length - 1];
+    if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1]);
+    else merged.push([...sp]);
+  }
+  loadedSpans = merged;
+}
+
+/** Re-read every lesson and cancellation that starts inside [start, end). */
+async function fetchRange(startMs, endMs) {
+  const from = new Date(startMs).toISOString();
+  const to   = new Date(endMs).toISOString();
+  const lessons = collection(db, "lessons");
+  const [lessonSnap, exSnap, repeatSnap, groupSnap] = await Promise.all([
+    getDocs(query(lessons, where("start", ">=", from), where("start", "<", to))),
+    getDocs(query(collection(db, "repeat_exceptions"), where("occStart", ">=", from), where("occStart", "<", to))),
+    getDocs(query(lessons, where("repeatWeekly", "==", true))),
+    getDocs(query(lessons, where("lessonType", "==", "group")))
+  ]);
+  groupNameKeys = new Set(groupSnap.docs.map(d => nameKey(d.data().title)).filter(Boolean));
+
+  // The query results are the whole truth for this window, so anything
+  // cached in it that came back missing has been deleted or moved.
+  for (const [id, l] of lessonDocs) {
+    const t = Date.parse(l.start);
+    if ((t >= startMs && t < endMs) || l.repeatWeekly) lessonDocs.delete(id);
+  }
+  for (const [key, t] of cancelledByRange) {
+    if (t >= startMs && t < endMs) cancelledByRange.delete(key);
+  }
+
+  [lessonSnap, repeatSnap].forEach(snap => snap.forEach(docSnap => {
+    const l = toLesson(docSnap);
+    if (l) lessonDocs.set(l.id, l);
+  }));
+  exSnap.forEach(ex => {
+    const x = ex.data();
+    if (x.type === "cancel") cancelledByRange.set(`${x.parentId}__${x.occStart}`, Date.parse(x.occStart));
+  });
+
+  addSpan(startMs, endMs);
+  publishCache();
+}
+
+/** Make sure [start, end) is loaded; fetches only when it is not yet. */
+async function ensureRange(start, end) {
+  const s = +start, e = +end;
+  if (isCovered(s, e)) return false;
+  await fetchRange(s - LOAD_PAD_MS, e + LOAD_PAD_MS);
+  return true;
+}
+
+/** The roster tab lists every student ever taught, so it needs everything. */
+async function ensureHistory() {
+  if (historyLoaded) return false;
+  const [snap, exSnap] = await Promise.all([
+    getDocs(collection(db, "lessons")),
+    getDocs(collection(db, "repeat_exceptions"))
+  ]);
+  lessonDocs.clear();
+  cancelledByRange.clear();
+  snap.forEach(docSnap => {
+    const l = toLesson(docSnap);
+    if (l) lessonDocs.set(l.id, l);
+  });
+  exSnap.forEach(ex => {
+    const x = ex.data();
+    if (x.type === "cancel") cancelledByRange.set(`${x.parentId}__${x.occStart}`, Date.parse(x.occStart));
+  });
+  historyLoaded = true;
+  publishCache();
+  return true;
+}
 
 /* =====================================================================
    Date helpers
@@ -382,6 +513,7 @@ function renderEventContent(arg) {
 
 function getEventColor(coachList, lessonType = "class") {
   if (lessonType === "group") return groupColor;
+  if (lessonType === "meeting") return meetingColor;
   const list = Array.isArray(coachList) ? coachList : [coachList];
   return coachColors[list[0]] || fallbackColor;
 }
@@ -391,9 +523,9 @@ function applyEventColors(info) {
   const lessonType = info.event.extendedProps.lessonType || "class";
   const list = Array.isArray(coach) ? coach : [coach];
 
-  if (lessonType === "group") {
+  if (lessonType === "group" || lessonType === "meeting") {
     info.el.style.backgroundImage = "";
-    info.el.style.backgroundColor = groupColor;
+    info.el.style.backgroundColor = getEventColor(list, lessonType);
     return;
   }
 
@@ -593,6 +725,13 @@ function updateConflictPreview() {
   const start = readStartFromInputs();
   if (!start) { hideConflictNotice(); setSaveBlocked(false); return; }
 
+  // A date far from the weeks on screen may not be loaded yet
+  if (!isCovered(+start - 7 * DAY_MS, +start + 7 * DAY_MS)) {
+    ensureRange(addDays(start, -7), addDays(start, 7))
+      .then(updateConflictPreview)
+      .catch(e => console.error(e));
+  }
+
   const end = addMinutes(start, typeDuration[getLessonType()] ?? 45);
   const grid = checkWithinGrid(start, end);
   const conflicts = findConflicts(
@@ -661,6 +800,7 @@ function activeRoster() {
   });
 
   lessonCache.forEach(l => {
+    if (isMeeting(l)) return;
     const key = nameKey(l.title);
     if (!key || archived.has(key)) return;
     if (!byKey.has(key)) byKey.set(key, { key, name: l.title.trim(), id: null, lessons: 0, coaches: new Set() });
@@ -676,7 +816,7 @@ function activeRoster() {
 function rosterForCoaches(coaches) {
   const counts = new Map();
   lessonCache.forEach(l => {
-    if (!coaches.some(c => l.coach.includes(c))) return;
+    if (isMeeting(l) || !coaches.some(c => l.coach.includes(c))) return;
     const key = nameKey(l.title);
     if (!key) return;
     counts.set(key, (counts.get(key) || 0) + 1);
@@ -810,11 +950,20 @@ function lessonWeight(type) {
  * older group bookings were sometimes saved as a plain class.
  */
 function groupKeys() {
-  const keys = new Set();
+  const keys = new Set(groupNameKeys);
   lessonCache.forEach(l => {
     if (l.lessonType === "group") keys.add(nameKey(l.title));
   });
   return keys;
+}
+
+/**
+ * Meetings are not lessons. Older ones were booked as a plain class named
+ * "SASTANAK" (Serbian for meeting), so that name counts as a meeting too.
+ */
+const MEETING_WORDS = /sastanak|meeting|собрание/i;
+function isMeeting(lesson) {
+  return lesson.lessonType === "meeting" || MEETING_WORDS.test(lesson.title || "");
 }
 
 function isGroupLesson(lesson, keys = groupKeys()) {
@@ -851,6 +1000,7 @@ function computeMonthStats(monthDate) {
     const l = occ.lesson;
     const key = nameKey(l.title);
     if (!key) continue;
+    if (isMeeting(l)) continue;
     const coaches = l.coach.length ? l.coach : ["Unassigned"];
 
     if (isGroupLesson(l, keys)) {
@@ -1392,7 +1542,31 @@ function emptyState(text) {
   return p;
 }
 
+let statsLoading = null;
+
 function renderStats() {
+  const { start, end } = monthRange(statsMonth);
+  const needsHistory = statsTab === "roster" && !historyLoaded;
+  if (needsHistory || !isCovered(+start, +end)) {
+    statsMonthLabel.textContent = monthLabel(statsMonth);
+    statsBody.innerHTML = "";
+    statsBody.appendChild(emptyState("Loading…"));
+    if (!statsLoading) {
+      statsLoading = (needsHistory ? ensureHistory() : ensureRange(start, end))
+        .then(() => {
+          statsLoading = null;
+          if (!statsModal.classList.contains("hidden")) renderStats();
+        })
+        .catch(e => {
+          statsLoading = null;
+          console.error(e);
+          statsBody.innerHTML = "";
+          statsBody.appendChild(emptyState("Could not load lessons. Close and open the stats to try again."));
+        });
+    }
+    return;
+  }
+
   const stats = computeMonthStats(statsMonth);
 
   statsMonthLabel.textContent = monthLabel(statsMonth);
@@ -1799,40 +1973,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   calendar.addEventSource(async (fetchInfo, successCallback, failureCallback) => {
     try {
-      // Cancelled occurrences (small dataset, fine to load in full)
-      const exSnap = await getDocs(collection(db, "repeat_exceptions"));
-      const cancelled = new Set();
-      exSnap.forEach(ex => {
-        const x = ex.data();
-        if (x.type === "cancel") cancelled.add(`${x.parentId}__${x.occStart}`);
-      });
-      cancelledSet = cancelled;
-
-      const snapshot = await getDocs(collection(db, "lessons"));
-
-      const cache = [];
-      snapshot.forEach(docSnap => {
-        const d = docSnap.data();
-        const baseStart = new Date(d.start);
-        const baseEnd   = new Date(d.end);
-
-        if (!isValidDate(baseStart) || !isValidDate(baseEnd)) {
-          console.warn(`Skipping lesson ${docSnap.id}: invalid start/end`, d.start, d.end);
-          return;
-        }
-
-        cache.push({
-          id: docSnap.id,
-          title: d.title || "Untitled lesson",
-          coach: Array.isArray(d.coach) ? d.coach : d.coach ? [d.coach] : [],
-          lessonType: d.lessonType || "class",
-          repeatWeekly: !!d.repeatWeekly,
-          repeatEndDate: d.repeatEndDate || null,
-          start: d.start,
-          durationMins: Math.max(1, Math.round((baseEnd - baseStart) / 60000))
-        });
-      });
-      lessonCache = cache;
+      // The visible week is always re-read so a save or delete shows up;
+      // the weeks around it are only fetched the first time.
+      await fetchRange(+fetchInfo.start, +fetchInfo.end);
+      await ensureRange(fetchInfo.start, fetchInfo.end);
 
       const coachFilterValue = coachFilter.value;
       const typeFilterValue  = typeFilter.value;
@@ -2088,6 +2232,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Warn about clashes, but let the boss decide.
+    try { await ensureRange(addDays(start, -7), addDays(start, 7)); }
+    catch (e) { console.error(e); }
     const conflicts = findConflicts(
       start, end,
       selectedEvent ? selectedEvent.extendedProps.docId : null,
