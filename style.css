@@ -413,6 +413,67 @@ h1 {
 }
 
 .fc-event-main { padding: 2px 5px; font-weight: 600; }
+
+/* Custom lesson content (renderEventContent). The block is a size container,
+   so each line can drop out on its own as side-by-side lessons get narrow. */
+.fc-timegrid-event .fc-event-main {
+  container-type: inline-size;
+  overflow: hidden;
+}
+.ev {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.2;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .18);
+}
+.ev-time {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: .92em;
+  opacity: .92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.ev-title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+.ev-coach {
+  font-size: .85em;
+  font-weight: 600;
+  opacity: .85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Two lessons side by side on a laptop: keep name, drop the coach line */
+@container (max-width: 90px) {
+  .ev { font-size: 11px; }
+  .ev-coach { display: none; }
+}
+/* Three side by side, or two on a phone: name only, broken anywhere */
+@container (max-width: 46px) {
+  .ev { font-size: 9px; line-height: 1.12; letter-spacing: -.01em; }
+  .ev-time { display: none; }
+}
+@container (max-width: 26px) {
+  .ev { font-size: 8px; }
+}
+
+/* Separate blocks that share a time slot with a thin gutter in the page colour */
+.fc .fc-timegrid-col-events { margin: 0 2px 0 1px; }
+.fc-timegrid-event-harness-inset .fc-timegrid-event,
+.fc-timegrid-event.fc-event-mirror {
+  box-shadow: 0 0 0 1px var(--surface), 0 1px 3px rgba(0, 0, 0, .18);
+}
 .fc-event-time  { font-weight: 700; opacity: .92; }
 .fc-event-title { font-weight: 600; }
 
@@ -1054,6 +1115,7 @@ h1 {
   .modal-content {
     max-width: none;
     max-height: 92vh;
+    max-height: 92dvh;
     border-radius: var(--radius-xl) var(--radius-xl) var(--radius-lg) var(--radius-lg);
     animation: sheet-in .34s var(--ease-spring) both;
   }
@@ -1239,7 +1301,8 @@ h1 {
 }
 
 .stats-summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   padding: 14px 18px 0;
 }
@@ -1257,7 +1320,8 @@ h1 {
 }
 
 .stats-figure strong { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em; color: var(--brand-500); }
-.stats-figure span   { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.stats-figure span   { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); text-align: center; line-height: 1.25; }
+.stats-figure.group strong { color: #8b5cf6; }
 
 .stats-tabs {
   display: flex;
@@ -1332,6 +1396,29 @@ h1 {
 
 .stat-card-total { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .stat-card-total strong { font-size: 1rem; color: var(--text); }
+
+.stat-card-totals { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.stat-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card-color) 14%, transparent);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.stat-pill strong { font-size: .95rem; color: var(--text); }
+.stat-pill.group { background: color-mix(in srgb, #8b5cf6 16%, transparent); }
+
+.stat-subhead {
+  margin: 12px 0 7px;
+  font-size: 10.5px;
+  font-weight: 750;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stat-card-head + .stat-subhead { margin-top: 0; }
 
 .stat-tag {
   padding: 2px 7px;
@@ -1479,6 +1566,10 @@ h1 {
   .stats-summary, .stats-tabs, .stats-monthbar { padding-left: 14px; padding-right: 14px; }
   .stats-tabs { margin-left: 14px; margin-right: 14px; }
   .stats-month-label { min-width: 130px; font-size: .9rem; }
+  .stats-summary { grid-template-columns: repeat(2, 1fr); }
+  .stats-figure { flex-direction: row; justify-content: center; gap: 7px; padding: 9px 6px; }
+  .stats-figure strong { font-size: 1.15rem; }
+  .stats-tab { padding: 8px 2px; font-size: 12px; }
   .stats-btn span { display: none; }
   .stats-btn { padding: 8px 11px; }
   .stat-row { grid-template-columns: minmax(64px, 1fr) minmax(40px, 1.4fr) auto; gap: 8px; }
@@ -1584,6 +1675,9 @@ a[href*="netlify.com"] {
     overflow: hidden;
   }
   .fc-timegrid-event .fc-event-time { font-weight: 700; }
+  .ev { font-size: 9px; line-height: 1.14; text-shadow: none; }
+  .ev-coach { display: none; }
+  .fc .fc-timegrid-col-events { margin: 0 1px; }
 
   /* Hover lift is meaningless on touch and only causes overlap */
   .fc-timegrid-event:hover { transform: none; box-shadow: 0 1px 3px rgba(0,0,0,.18); filter: none; }
@@ -1617,6 +1711,7 @@ a[href*="netlify.com"] {
 @media (max-width: 380px) {
   .fc-timegrid-event .fc-event-time,
   .fc-timegrid-event .fc-event-title { font-size: 8px; }
+  .ev { font-size: 8.5px; }
   .fc .fc-col-header-cell-cushion { font-size: 9px; }
 }
 
@@ -1662,3 +1757,57 @@ a[href*="netlify.com"] {
   font-weight: 700;
   color: var(--muted);
 }
+
+/* ===== Phone form fixes =====
+   iOS zooms the whole page in when a field under 16px is focused, which
+   pushed the Save button off screen and left the page stuck zoomed in.
+   16px is the threshold that stops it. */
+@media (max-width: 599px), (pointer: coarse) {
+  .modal-content input,
+  .modal-content select,
+  .modal-content textarea,
+  .roster-search,
+  .roster-add-input {
+    font-size: 16px !important;
+  }
+}
+
+/* While the on-screen keyboard is up, app.js pins the sheet to the visible
+   part of the screen so the Save button stays above the keyboard. */
+.modal.vv-fit { inset: auto 0 auto 0; }
+.modal.vv-fit .modal-content { max-height: calc(100% - 10px); }
+
+/* "+N" link for lessons that do not fit side by side on a phone */
+.fc .fc-timegrid-more-link {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  box-sizing: border-box;
+}
+.fc .fc-timegrid-more-link-inner { padding: 2px 0; }
+
+.fc .fc-popover {
+  z-index: 900;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  max-width: calc(100vw - 24px);
+}
+.fc .fc-popover-header {
+  padding: 8px 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 700;
+}
+.fc .fc-popover-body { padding: 8px; min-width: 170px; }
+.fc .fc-popover .fc-event { margin-bottom: 4px; padding: 4px 6px; }
+.fc .fc-popover .ev { font-size: 12px; }
+.fc .fc-popover .ev-coach { display: block; }
